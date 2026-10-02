@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
 
@@ -68,3 +69,58 @@ def backend_name():
 
 def using_cloud_database():
     return backend_name() == "postgresql"
+
+
+def database_diagnostics():
+    """Return safe connection metadata. Never includes the password."""
+    raw = os.getenv("DATABASE_URL") or _secret_database_url()
+    if not raw:
+        return {
+            "configured": False,
+            "backend": "sqlite",
+            "host": None,
+            "port": None,
+            "database": None,
+            "username": None,
+        }
+
+    try:
+        parsed = make_url(raw)
+        return {
+            "configured": True,
+            "backend": parsed.get_backend_name(),
+            "host": parsed.host,
+            "port": parsed.port,
+            "database": parsed.database,
+            "username": parsed.username,
+        }
+    except Exception:
+        return {
+            "configured": True,
+            "backend": "unparseable",
+            "host": None,
+            "port": None,
+            "database": None,
+            "username": None,
+        }
+
+
+def classify_connection_error(exc):
+    """Convert a DB exception into a safe, actionable diagnosis."""
+    text = str(getattr(exc, "orig", exc)).lower()
+
+    if "password authentication failed" in text or "authentication failed" in text:
+        return "Database password rejected"
+    if "tenant or user not found" in text or "user not found" in text:
+        return "Pooler username/project reference is incorrect"
+    if "name or service not known" in text or "nodename nor servname" in text or "could not translate host name" in text:
+        return "Database host could not be resolved"
+    if "timeout" in text or "timed out" in text:
+        return "Database connection timed out"
+    if "connection refused" in text:
+        return "Database host refused the connection"
+    if "ssl" in text:
+        return "SSL connection problem"
+    if "database" in text and "does not exist" in text:
+        return "Database name is incorrect"
+    return "Database connection failed"
