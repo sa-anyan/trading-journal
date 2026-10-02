@@ -36,13 +36,6 @@ def _allowed_emails():
         return set()
 
 
-def _auth_bypass_enabled():
-    value = _secret("AUTH_BYPASS", False)
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def auth_client():
     url = _secret("SUPABASE_URL", DEFAULT_SUPABASE_URL)
     key = _secret(
@@ -186,11 +179,6 @@ def _render_login_page():
 
 
 def require_auth():
-    if _auth_bypass_enabled():
-        st.session_state["auth_user_email"] = "debug-bypass"
-        st.session_state["auth_user_id"] = "debug-bypass"
-        return True
-
     if is_authenticated():
         return True
 
