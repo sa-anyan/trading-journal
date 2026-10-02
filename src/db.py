@@ -1,294 +1,471 @@
-import sqlite3
-from pathlib import Path
+###########################################################################
+# TRADING JOURNAL - PERSISTENCE LAYER
+###########################################################################
+# One API, two backends:
+#   - SQLite for local development
+#   - PostgreSQL / Supabase for Streamlit Cloud
+###########################################################################
+
 import pandas as pd
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+    select,
+    update,
+)
 
-DB = Path(__file__).resolve().parents[1] / "data" / "journal.db"
+from src.database import ENGINE
 
-def conn():
-    DB.parent.mkdir(exist_ok=True)
-    c = sqlite3.connect(DB)
-    c.execute("PRAGMA foreign_keys=ON")
-    return c
 
-def _column_names(c, table):
-    return {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+###########################################################################
+# 1. SCHEMA
+###########################################################################
 
-def _add_column_if_missing(c, table, column_def):
-    name = column_def.split()[0]
-    if name not in _column_names(c, table):
-        c.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+metadata = MetaData()
+
+strategies = Table(
+    "strategies",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", String(255), nullable=False),
+    Column("description", Text, default=""),
+    Column("created_at", DateTime(timezone=True), server_default=func.current_timestamp()),
+)
+
+strategy_versions = Table(
+    "strategy_versions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("strategy_id", Integer, ForeignKey("strategies.id"), nullable=False),
+    Column("version", String(64), nullable=False),
+    Column("market_scope", Text, default="Any"),
+    Column("timeframe_scope", Text, default="Any"),
+    Column("direction_scope", Text, default="Long + Short"),
+    Column("setup", Text, default=""),
+    Column("long_entry", Text, default=""),
+    Column("short_entry", Text, default=""),
+    Column("stop_rule", Text, default=""),
+    Column("target_rule", Text, default=""),
+    Column("exit_rule", Text, default=""),
+    Column("risk_rule", Text, default=""),
+    Column("trading_window", Text, default=""),
+    Column("max_trades", Text, default=""),
+    Column("exclusions", Text, default=""),
+    Column("checklist", Text, default=""),
+    Column("change_note", Text, default=""),
+    Column("locked", Integer, default=1),
+    Column("created_at", DateTime(timezone=True), server_default=func.current_timestamp()),
+    UniqueConstraint("strategy_id", "version", name="uq_strategy_version"),
+)
+
+sessions = Table(
+    "sessions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("created_at", DateTime(timezone=True), server_default=func.current_timestamp()),
+    Column("strategy", Text, nullable=False),
+    Column("version", Text, nullable=False),
+    Column("timeframe", Text),
+    Column("test_name", Text),
+    Column("notes", Text),
+    Column("source_file", Text),
+    Column("strategy_version_id", Integer, ForeignKey("strategy_versions.id")),
+    Column("asset_class", Text, default=""),
+    Column("group_name", Text, default=""),
+    Column("instrument_name", Text, default=""),
+    Column("source_type", Text, default="Replay"),
+)
+
+trades = Table(
+    "trades",
+    metadata,
+    Column("trade_uid", String(64), primary_key=True),
+    Column("session_id", Integer, ForeignKey("sessions.id")),
+    Column("trade_number", Integer),
+    Column("symbol", Text),
+    Column("direction", Text),
+    Column("entry_time", Text),
+    Column("exit_time", Text),
+    Column("entry_signal", Text),
+    Column("exit_signal", Text),
+    Column("entry_price", Float),
+    Column("exit_price", Float),
+    Column("quantity", Float),
+    Column("position_value", Float),
+    Column("net_pnl", Float),
+    Column("return_pct", Float),
+    Column("commission", Float),
+    Column("favorable_excursion", Float),
+    Column("favorable_excursion_pct", Float),
+    Column("adverse_excursion", Float),
+    Column("adverse_excursion_pct", Float),
+    Column("duration_bars", Integer),
+    Column("duration_seconds", Integer),
+    Column("followed_rules", Integer, default=1),
+    Column("trade_notes", Text, default=""),
+    Column("planned_stop_price", Float),
+    Column("risk_input_note", Text, default=""),
+    Column("initial_take_profit_price", Float),
+    Column("final_stop_price", Float),
+    Column("final_take_profit_price", Float),
+    Column("entry_order_id", Text, default=""),
+    Column("exit_order_id", Text, default=""),
+    Column("stop_source", Text, default=""),
+    Column("pnl_source", Text, default=""),
+    Column("modification_count", Integer, default=0),
+)
+
+
+###########################################################################
+# 2. INITIALISATION
+###########################################################################
 
 def init_db():
-    with conn() as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS strategies(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-            description TEXT DEFAULT '',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
+    """Create missing tables without deleting existing data."""
+    metadata.create_all(ENGINE)
 
-        CREATE TABLE IF NOT EXISTS strategy_versions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            strategy_id INTEGER NOT NULL,
-            version TEXT NOT NULL,
-            market_scope TEXT DEFAULT 'Any',
-            timeframe_scope TEXT DEFAULT 'Any',
-            direction_scope TEXT DEFAULT 'Long + Short',
-            setup TEXT DEFAULT '',
-            long_entry TEXT DEFAULT '',
-            short_entry TEXT DEFAULT '',
-            stop_rule TEXT DEFAULT '',
-            target_rule TEXT DEFAULT '',
-            exit_rule TEXT DEFAULT '',
-            risk_rule TEXT DEFAULT '',
-            trading_window TEXT DEFAULT '',
-            max_trades TEXT DEFAULT '',
-            exclusions TEXT DEFAULT '',
-            checklist TEXT DEFAULT '',
-            change_note TEXT DEFAULT '',
-            locked INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(strategy_id, version),
-            FOREIGN KEY(strategy_id) REFERENCES strategies(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS sessions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            strategy TEXT NOT NULL,
-            version TEXT NOT NULL,
-            timeframe TEXT,
-            test_name TEXT,
-            notes TEXT,
-            source_file TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS trades(
-            trade_uid TEXT PRIMARY KEY,
-            session_id INTEGER,
-            trade_number INTEGER,
-            symbol TEXT,
-            direction TEXT,
-            entry_time TEXT,
-            exit_time TEXT,
-            entry_signal TEXT,
-            exit_signal TEXT,
-            entry_price REAL,
-            exit_price REAL,
-            quantity REAL,
-            position_value REAL,
-            net_pnl REAL,
-            return_pct REAL,
-            commission REAL,
-            favorable_excursion REAL,
-            favorable_excursion_pct REAL,
-            adverse_excursion REAL,
-            adverse_excursion_pct REAL,
-            duration_bars INTEGER,
-            duration_seconds INTEGER,
-            followed_rules INTEGER DEFAULT 1,
-            trade_notes TEXT DEFAULT '',
-            FOREIGN KEY(session_id) REFERENCES sessions(id)
-        );
-        """)
-
-        # Safe migration for databases created by v0.1.
-        _add_column_if_missing(c, "sessions", "strategy_version_id INTEGER")
-        _add_column_if_missing(c, "sessions", "asset_class TEXT DEFAULT ''")
-        _add_column_if_missing(c, "sessions", "group_name TEXT DEFAULT ''")
-        _add_column_if_missing(c, "sessions", "instrument_name TEXT DEFAULT ''")
-        _add_column_if_missing(c, "sessions", "source_type TEXT DEFAULT 'Replay'")
-        _add_column_if_missing(c, "trades", "initial_take_profit_price REAL")
-        _add_column_if_missing(c, "trades", "final_stop_price REAL")
-        _add_column_if_missing(c, "trades", "final_take_profit_price REAL")
-        _add_column_if_missing(c, "trades", "entry_order_id TEXT DEFAULT ''")
-        _add_column_if_missing(c, "trades", "exit_order_id TEXT DEFAULT ''")
-        _add_column_if_missing(c, "trades", "stop_source TEXT DEFAULT ''")
-        _add_column_if_missing(c, "trades", "pnl_source TEXT DEFAULT ''")
-        _add_column_if_missing(c, "trades", "modification_count INTEGER DEFAULT 0")
-        c.execute("UPDATE sessions SET source_type='Replay' WHERE source_type IS NULL OR TRIM(source_type)=''")
-        _add_column_if_missing(c, "trades", "planned_stop_price REAL")
-        _add_column_if_missing(c, "trades", "risk_input_note TEXT DEFAULT ''")
-
-        # Backfill strategy/version objects from any old v0.1 sessions.
-        legacy = c.execute("""
-            SELECT DISTINCT strategy, version
-            FROM sessions
-            WHERE strategy IS NOT NULL AND TRIM(strategy) <> ''
-        """).fetchall()
-
-        for strategy_name, version in legacy:
-            c.execute("INSERT OR IGNORE INTO strategies(name) VALUES(?)", (strategy_name,))
-            sid = c.execute("SELECT id FROM strategies WHERE name=? COLLATE NOCASE", (strategy_name,)).fetchone()[0]
-            v = version or "v1.0"
-            c.execute("""
-                INSERT OR IGNORE INTO strategy_versions(strategy_id, version, change_note, locked)
-                VALUES(?,?,?,1)
-            """, (sid, v, "Migrated from trading-journal v0.1"))
-
-        c.execute("""
-            UPDATE sessions
-            SET strategy_version_id = (
-                SELECT sv.id
-                FROM strategy_versions sv
-                JOIN strategies s ON s.id = sv.strategy_id
-                WHERE s.name = sessions.strategy COLLATE NOCASE
-                  AND sv.version = COALESCE(NULLIF(sessions.version,''),'v1.0')
-                LIMIT 1
+    # Create case-insensitive strategy-name uniqueness where supported.
+    with ENGINE.begin() as connection:
+        dialect = ENGINE.dialect.name
+        if dialect == "postgresql":
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategies_name_lower "
+                "ON strategies (LOWER(name))"
             )
-            WHERE strategy_version_id IS NULL
-        """)
+        elif dialect == "sqlite":
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_strategies_name_lower "
+                "ON strategies (LOWER(name))"
+            )
+
+
+###########################################################################
+# 3. STRATEGY VERSIONING
+###########################################################################
+
+def _strategy_row(connection, strategy_name):
+    return connection.execute(
+        select(strategies.c.id, strategies.c.name).where(
+            func.lower(strategies.c.name) == strategy_name.lower()
+        )
+    ).first()
+
 
 def create_strategy_version(strategy_name, version, fields):
     strategy_name = strategy_name.strip()
     version = (version or "v1.0").strip()
+
     if not strategy_name:
         raise ValueError("Strategy name is required.")
-    with conn() as c:
-        c.execute("INSERT OR IGNORE INTO strategies(name, description) VALUES(?,?)",
-                  (strategy_name, fields.get("description","")))
-        row = c.execute("SELECT id FROM strategies WHERE name=? COLLATE NOCASE", (strategy_name,)).fetchone()
-        strategy_id = row[0]
-        existing = c.execute(
-            "SELECT id FROM strategy_versions WHERE strategy_id=? AND version=?",
-            (strategy_id, version)
-        ).fetchone()
-        if existing:
-            raise ValueError(f"{strategy_name} {version} already exists. Create a new version instead of overwriting locked rules.")
 
-        cols = [
-            "market_scope","timeframe_scope","direction_scope","setup","long_entry","short_entry",
-            "stop_rule","target_rule","exit_rule","risk_rule","trading_window","max_trades",
-            "exclusions","checklist","change_note"
-        ]
-        values = [fields.get(k,"") for k in cols]
-        q = ",".join(["?"] * (2 + len(cols)))
-        c.execute(
-            f"""INSERT INTO strategy_versions(
-                strategy_id, version, {",".join(cols)}, locked
-            ) VALUES({q},1)""",
-            [strategy_id, version] + values
+    with ENGINE.begin() as connection:
+        strategy = _strategy_row(connection, strategy_name)
+
+        if strategy is None:
+            result = connection.execute(
+                strategies.insert().values(
+                    name=strategy_name,
+                    description=fields.get("description", ""),
+                )
+            )
+            strategy_id = result.inserted_primary_key[0]
+        else:
+            strategy_id = strategy.id
+
+        existing = connection.execute(
+            select(strategy_versions.c.id).where(
+                strategy_versions.c.strategy_id == strategy_id,
+                strategy_versions.c.version == version,
+            )
+        ).first()
+
+        if existing:
+            raise ValueError(
+                f"{strategy_name} {version} already exists. "
+                "Create a new version instead of overwriting locked rules."
+            )
+
+        connection.execute(
+            strategy_versions.insert().values(
+                strategy_id=strategy_id,
+                version=version,
+                market_scope=fields.get("market_scope", ""),
+                timeframe_scope=fields.get("timeframe_scope", ""),
+                direction_scope=fields.get("direction_scope", ""),
+                setup=fields.get("setup", ""),
+                long_entry=fields.get("long_entry", ""),
+                short_entry=fields.get("short_entry", ""),
+                stop_rule=fields.get("stop_rule", ""),
+                target_rule=fields.get("target_rule", ""),
+                exit_rule=fields.get("exit_rule", ""),
+                risk_rule=fields.get("risk_rule", ""),
+                trading_window=fields.get("trading_window", ""),
+                max_trades=fields.get("max_trades", ""),
+                exclusions=fields.get("exclusions", ""),
+                checklist=fields.get("checklist", ""),
+                change_note=fields.get("change_note", ""),
+                locked=1,
+            )
         )
 
+
 def list_strategy_versions():
-    with conn() as c:
-        return pd.read_sql_query("""
-            SELECT sv.id AS strategy_version_id, s.name AS strategy, sv.version,
-                   sv.market_scope, sv.timeframe_scope, sv.direction_scope,
-                   sv.setup, sv.long_entry, sv.short_entry, sv.stop_rule,
-                   sv.target_rule, sv.exit_rule, sv.risk_rule, sv.trading_window,
-                   sv.max_trades, sv.exclusions, sv.checklist, sv.change_note,
-                   sv.locked, sv.created_at
-            FROM strategy_versions sv
-            JOIN strategies s ON s.id=sv.strategy_id
-            ORDER BY s.name COLLATE NOCASE, sv.created_at, sv.id
-        """, c)
+    query = (
+        select(
+            strategy_versions.c.id.label("strategy_version_id"),
+            strategies.c.name.label("strategy"),
+            strategy_versions.c.version,
+            strategy_versions.c.market_scope,
+            strategy_versions.c.timeframe_scope,
+            strategy_versions.c.direction_scope,
+            strategy_versions.c.setup,
+            strategy_versions.c.long_entry,
+            strategy_versions.c.short_entry,
+            strategy_versions.c.stop_rule,
+            strategy_versions.c.target_rule,
+            strategy_versions.c.exit_rule,
+            strategy_versions.c.risk_rule,
+            strategy_versions.c.trading_window,
+            strategy_versions.c.max_trades,
+            strategy_versions.c.exclusions,
+            strategy_versions.c.checklist,
+            strategy_versions.c.change_note,
+            strategy_versions.c.locked,
+            strategy_versions.c.created_at,
+        )
+        .join(strategies, strategies.c.id == strategy_versions.c.strategy_id)
+        .order_by(
+            func.lower(strategies.c.name),
+            strategy_versions.c.created_at,
+            strategy_versions.c.id,
+        )
+    )
+
+    with ENGINE.connect() as connection:
+        return pd.read_sql(query, connection)
+
 
 def get_strategy_version(strategy_version_id):
-    with conn() as c:
-        row = c.execute("""
-            SELECT sv.id, s.name, sv.version, sv.market_scope, sv.timeframe_scope,
-                   sv.direction_scope, sv.setup, sv.long_entry, sv.short_entry,
-                   sv.stop_rule, sv.target_rule, sv.exit_rule, sv.risk_rule,
-                   sv.trading_window, sv.max_trades, sv.exclusions, sv.checklist,
-                   sv.change_note, sv.locked
-            FROM strategy_versions sv JOIN strategies s ON s.id=sv.strategy_id
-            WHERE sv.id=?
-        """, (int(strategy_version_id),)).fetchone()
-        return row
+    query = (
+        select(
+            strategy_versions.c.id,
+            strategies.c.name,
+            strategy_versions.c.version,
+            strategy_versions.c.market_scope,
+            strategy_versions.c.timeframe_scope,
+            strategy_versions.c.direction_scope,
+            strategy_versions.c.setup,
+            strategy_versions.c.long_entry,
+            strategy_versions.c.short_entry,
+            strategy_versions.c.stop_rule,
+            strategy_versions.c.target_rule,
+            strategy_versions.c.exit_rule,
+            strategy_versions.c.risk_rule,
+            strategy_versions.c.trading_window,
+            strategy_versions.c.max_trades,
+            strategy_versions.c.exclusions,
+            strategy_versions.c.checklist,
+            strategy_versions.c.change_note,
+            strategy_versions.c.locked,
+        )
+        .join(strategies, strategies.c.id == strategy_versions.c.strategy_id)
+        .where(strategy_versions.c.id == int(strategy_version_id))
+    )
 
-def save_session(meta, trades):
-    with conn() as c:
-        sv_id = meta.get("strategy_version_id")
-        strategy = meta.get("strategy","")
-        version = meta.get("version","v1.0")
-        if sv_id:
-            row = c.execute("""
-                SELECT s.name, sv.version
-                FROM strategy_versions sv JOIN strategies s ON s.id=sv.strategy_id
-                WHERE sv.id=?
-            """, (int(sv_id),)).fetchone()
-            if not row:
+    with ENGINE.connect() as connection:
+        return connection.execute(query).first()
+
+
+###########################################################################
+# 4. SESSION + TRADE STORAGE
+###########################################################################
+
+TRADE_COLUMNS = [
+    "trade_uid",
+    "trade_number",
+    "symbol",
+    "direction",
+    "entry_time",
+    "exit_time",
+    "entry_signal",
+    "exit_signal",
+    "entry_price",
+    "exit_price",
+    "quantity",
+    "position_value",
+    "net_pnl",
+    "return_pct",
+    "commission",
+    "favorable_excursion",
+    "favorable_excursion_pct",
+    "adverse_excursion",
+    "adverse_excursion_pct",
+    "duration_bars",
+    "duration_seconds",
+    "planned_stop_price",
+    "initial_take_profit_price",
+    "final_stop_price",
+    "final_take_profit_price",
+    "entry_order_id",
+    "exit_order_id",
+    "stop_source",
+    "pnl_source",
+    "modification_count",
+]
+
+
+def _clean_value(column, value):
+    if column in {"entry_time", "exit_time"} and value is not None:
+        return str(value)
+
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    return value
+
+
+def save_session(meta, trade_frame):
+    with ENGINE.begin() as connection:
+        strategy_version_id = meta.get("strategy_version_id")
+        strategy_name = meta.get("strategy", "")
+        version_name = meta.get("version", "v1.0")
+
+        if strategy_version_id:
+            resolved = connection.execute(
+                select(
+                    strategies.c.name,
+                    strategy_versions.c.version,
+                )
+                .join(
+                    strategies,
+                    strategies.c.id == strategy_versions.c.strategy_id,
+                )
+                .where(strategy_versions.c.id == int(strategy_version_id))
+            ).first()
+
+            if not resolved:
                 raise ValueError("Selected strategy version no longer exists.")
-            strategy, version = row
 
-        cur = c.execute("""
-            INSERT INTO sessions(
-                strategy,version,timeframe,test_name,notes,source_file,
-                strategy_version_id,asset_class,group_name,instrument_name,source_type
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            strategy, version, meta.get("timeframe",""), meta.get("test_name",""),
-            meta.get("notes",""), meta.get("source_file",""), sv_id,
-            meta.get("asset_class",""), meta.get("group_name",""),
-            meta.get("instrument_name",""), meta.get("source_type","Replay")
-        ))
-        session_id = cur.lastrowid
+            strategy_name, version_name = resolved
+
+        session_result = connection.execute(
+            sessions.insert().values(
+                strategy=strategy_name,
+                version=version_name,
+                timeframe=meta.get("timeframe", ""),
+                test_name=meta.get("test_name", ""),
+                notes=meta.get("notes", ""),
+                source_file=meta.get("source_file", ""),
+                strategy_version_id=strategy_version_id,
+                asset_class=meta.get("asset_class", ""),
+                group_name=meta.get("group_name", ""),
+                instrument_name=meta.get("instrument_name", ""),
+                source_type=meta.get("source_type", "Replay"),
+            )
+        )
+        session_id = session_result.inserted_primary_key[0]
+
         added = 0
         skipped = 0
 
-        trade_columns = [
-            "trade_uid","trade_number","symbol","direction","entry_time","exit_time",
-            "entry_signal","exit_signal","entry_price","exit_price","quantity",
-            "position_value","net_pnl","return_pct","commission","favorable_excursion",
-            "favorable_excursion_pct","adverse_excursion","adverse_excursion_pct",
-            "duration_bars","duration_seconds","planned_stop_price",
-            "initial_take_profit_price","final_stop_price","final_take_profit_price",
-            "entry_order_id","exit_order_id","stop_source","pnl_source","modification_count"
-        ]
-        for _, r in trades.iterrows():
-            vals=[]
-            for column in trade_columns:
-                value=r.get(column,None)
-                if column in {"entry_time","exit_time"} and value is not None:
-                    value=str(value)
-                try:
-                    if pd.isna(value): value=None
-                except Exception:
-                    pass
-                vals.append(value)
-            try:
-                placeholders=",".join(["?"]*(1+len(trade_columns)))
-                c.execute(
-                    f"INSERT INTO trades(session_id,{','.join(trade_columns)}) VALUES({placeholders})",
-                    [session_id]+vals,
+        for _, row in trade_frame.iterrows():
+            trade_uid = row.get("trade_uid")
+
+            duplicate = connection.execute(
+                select(trades.c.trade_uid).where(
+                    trades.c.trade_uid == trade_uid
                 )
-                added += 1
-            except sqlite3.IntegrityError:
+            ).first()
+
+            if duplicate:
                 skipped += 1
+                continue
+
+            values = {
+                column: _clean_value(column, row.get(column, None))
+                for column in TRADE_COLUMNS
+            }
+            values["session_id"] = session_id
+
+            connection.execute(trades.insert().values(**values))
+            added += 1
 
         if added == 0:
-            c.execute("DELETE FROM sessions WHERE id=?", (session_id,))
-        return added, skipped
+            connection.execute(
+                sessions.delete().where(sessions.c.id == session_id)
+            )
 
-def load_trades():
-    with conn() as c:
-        return pd.read_sql_query("""
-            SELECT t.*, s.strategy, s.version, s.timeframe, s.test_name, s.created_at,
-                   COALESCE(NULLIF(s.asset_class,''),'Other') AS asset_class,
-                   COALESCE(NULLIF(s.group_name,''),'Unclassified') AS group_name,
-                   COALESCE(NULLIF(s.instrument_name,''),t.symbol) AS instrument_name,
-                   COALESCE(NULLIF(s.source_type,''),'Replay') AS source_type,
-                   s.strategy_version_id
-            FROM trades t
-            JOIN sessions s ON t.session_id=s.id
-            ORDER BY datetime(t.entry_time)
-        """, c)
+        return added, skipped
 
 
 ###########################################################################
-# RISK NORMALISATION INPUTS
+# 5. READ MODEL
+###########################################################################
+
+def load_trades():
+    query = (
+        select(
+            trades,
+            sessions.c.strategy,
+            sessions.c.version,
+            sessions.c.timeframe,
+            sessions.c.test_name,
+            sessions.c.created_at,
+            func.coalesce(
+                func.nullif(sessions.c.asset_class, ""),
+                "Other",
+            ).label("asset_class"),
+            func.coalesce(
+                func.nullif(sessions.c.group_name, ""),
+                "Unclassified",
+            ).label("group_name"),
+            func.coalesce(
+                func.nullif(sessions.c.instrument_name, ""),
+                trades.c.symbol,
+            ).label("instrument_name"),
+            func.coalesce(
+                func.nullif(sessions.c.source_type, ""),
+                "Replay",
+            ).label("source_type"),
+            sessions.c.strategy_version_id,
+        )
+        .join(sessions, trades.c.session_id == sessions.c.id)
+        .order_by(trades.c.entry_time)
+    )
+
+    with ENGINE.connect() as connection:
+        return pd.read_sql(query, connection)
+
+
+###########################################################################
+# 6. RISK INPUTS
 ###########################################################################
 
 def update_trade_risk_inputs(rows):
-    """Persist intended stop prices without changing original TV results."""
-    with conn() as c:
+    """Persist intended stop prices without changing source trade results."""
+    with ENGINE.begin() as connection:
         for row in rows:
             stop = row.get("planned_stop_price")
             if stop in ("", None):
                 stop = None
-            c.execute(
-                "UPDATE trades SET planned_stop_price=?, risk_input_note=? WHERE trade_uid=?",
-                (stop, row.get("risk_input_note", ""), row.get("trade_uid")),
+
+            connection.execute(
+                update(trades)
+                .where(trades.c.trade_uid == row.get("trade_uid"))
+                .values(
+                    planned_stop_price=stop,
+                    risk_input_note=row.get("risk_input_note", ""),
+                )
             )
