@@ -9,6 +9,7 @@
 import pandas as pd
 from sqlalchemy import (
     Column,
+    DateTime,
     Float,
     ForeignKey,
     Integer,
@@ -37,7 +38,7 @@ strategies = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("name", String(255), nullable=False),
     Column("description", Text, default=""),
-    Column("created_at", String(64), server_default=func.current_timestamp()),
+    Column("created_at", DateTime(timezone=True), server_default=func.current_timestamp()),
 )
 
 strategy_versions = Table(
@@ -62,7 +63,7 @@ strategy_versions = Table(
     Column("checklist", Text, default=""),
     Column("change_note", Text, default=""),
     Column("locked", Integer, default=1),
-    Column("created_at", String(64), server_default=func.current_timestamp()),
+    Column("created_at", DateTime(timezone=True), server_default=func.current_timestamp()),
     UniqueConstraint("strategy_id", "version", name="uq_strategy_version"),
 )
 
@@ -70,7 +71,7 @@ sessions = Table(
     "sessions",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("created_at", String(64), server_default=func.current_timestamp()),
+    Column("created_at", DateTime(timezone=True), server_default=func.current_timestamp()),
     Column("strategy", Text, nullable=False),
     Column("version", Text, nullable=False),
     Column("timeframe", Text),
