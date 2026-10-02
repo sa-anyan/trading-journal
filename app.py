@@ -1,7 +1,13 @@
 import streamlit as st
 
-from src.db import init_db, load_trades
-from src.ui import apply_premium_theme, hero, section_label
+from src.db import init_db
+from src.ui import apply_premium_theme, hero
+from views.dashboard import render as render_dashboard
+from views.import_paper import render as render_paper
+from views.import_replay import render as render_replay
+from views.journal import render as render_journal
+from views.lab import render as render_lab
+from views.strategy import render as render_strategy
 
 st.set_page_config(
     page_title="Trading Journal",
@@ -19,15 +25,14 @@ hero(
     "Replay • Paper Trading • Strategy Intelligence",
 )
 
-section_label("Performance intelligence")
-st.header("Strategy Research Dashboard")
+NAVIGATION={
+    "◈  Dashboard":render_dashboard,
+    "◇  Strategy Builder":render_strategy,
+    "↓  Import Replay":render_replay,
+    "↓  Import Paper Log":render_paper,
+    "≡  Journal":render_journal,
+    "⌁  Strategy Lab":render_lab,
+}
 
-trades = load_trades()
-if trades.empty:
-    st.info("No trades imported yet. Add a strategy and import TradingView data to begin.")
-else:
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Trades", len(trades))
-    c2.metric("Strategies", trades["strategy"].nunique())
-    c3.metric("Instruments", trades["symbol"].nunique())
-    st.dataframe(trades.tail(25), use_container_width=True, hide_index=True)
+choice=st.sidebar.radio("Navigate",list(NAVIGATION.keys()))
+NAVIGATION[choice]()
