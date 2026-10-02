@@ -1,6 +1,7 @@
 import streamlit as st
 
 from src.db import init_db
+from src.database import backend_name, using_cloud_database
 from src.ui import apply_premium_theme, hero
 from views.dashboard import render as render_dashboard
 from views.import_paper import render as render_paper
@@ -35,4 +36,9 @@ NAVIGATION={
 }
 
 choice=st.sidebar.radio("Navigate",list(NAVIGATION.keys()))
+st.sidebar.divider()
+if using_cloud_database():
+    st.sidebar.caption("Database · PostgreSQL cloud")
+else:
+    st.sidebar.caption("Database · SQLite local")
 NAVIGATION[choice]()
