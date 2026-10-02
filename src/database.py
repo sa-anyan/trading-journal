@@ -124,3 +124,34 @@ def classify_connection_error(exc):
     if "database" in text and "does not exist" in text:
         return "Database name is incorrect"
     return "Database connection failed"
+
+
+def safe_connection_error_details(exc):
+    """Return the DB driver's error text with credentials aggressively redacted."""
+    import re
+
+    raw = str(getattr(exc, "orig", exc))
+    secret_url = os.getenv("DATABASE_URL") or _secret_database_url()
+
+    # Remove the configured password if present.
+    if secret_url:
+        try:
+            parsed = make_url(secret_url)
+            if parsed.password:
+                raw = raw.replace(str(parsed.password), "***")
+        except Exception:
+            pass
+
+    # Redact credentials embedded in postgres URLs and common password fields.
+    raw = re.sub(
+        r"(postgres(?:ql)?(?:\+psycopg)?://[^:\s]+:)[^@\s]+(@)",
+        r"\1***\2",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"(?i)(password\s*[=:]\s*)[^\s,;]+",
+        r"\1***",
+        raw,
+    )
+    return raw[:1200]
