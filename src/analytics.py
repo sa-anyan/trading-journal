@@ -26,7 +26,11 @@ def metrics(df: pd.DataFrame) -> dict:
     gross_profit = wins.sum()
     gross_loss = abs(losses.sum())
 
-    equity = pnl.cumsum()
+    # Include the pre-trade baseline so the first losing trade counts as drawdown.
+    equity = pd.concat(
+        [pd.Series([0.0]), pnl.cumsum().reset_index(drop=True)],
+        ignore_index=True,
+    )
     drawdown = equity - equity.cummax()
 
     return {
@@ -217,7 +221,13 @@ def standardised_metrics(df, starting_account):
     r = usable["r_multiple"].astype(float)
     wins, losses = pnl[pnl > 0], pnl[pnl < 0]
     gp, gl = wins.sum(), abs(losses.sum())
-    equity = usable["standardised_equity"].astype(float)
+    equity = pd.concat(
+        [
+            pd.Series([float(starting_account)]),
+            usable["standardised_equity"].astype(float).reset_index(drop=True),
+        ],
+        ignore_index=True,
+    )
     peak = equity.cummax()
     dd = equity - peak
     dd_pct = (equity / peak - 1.0) * 100.0
