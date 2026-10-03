@@ -28,7 +28,20 @@ def parse_replay_csv(file_or_path, filename=None):
             "Not a recognised TradingView Replay export. Missing: "
             + ", ".join(sorted(missing))
         )
-    df["Date and time"] = pd.to_datetime(df["Date and time"], dayfirst=True, errors="raise")
+    # TradingView exports ISO-like timestamps (YYYY-MM-DD HH:MM) but may vary
+    # slightly between rows/exports. Parse each value flexibly rather than
+    # forcing day-first interpretation, which breaks dates such as 2026-04-27.
+    raw_times = df["Date and time"].astype("string").str.strip()
+    parsed_times = pd.to_datetime(raw_times, format="mixed", errors="coerce")
+    bad_times = raw_times[parsed_times.isna()]
+    if not bad_times.empty:
+        examples = ", ".join(repr(v) for v in bad_times.dropna().unique()[:3])
+        raise ValueError(
+            "Could not read one or more TradingView dates"
+            + (f": {examples}" if examples else ".")
+            + " Please export the Replay CSV again without editing the date column."
+        )
+    df["Date and time"] = parsed_times
     fname = filename or getattr(file_or_path, "name", "replay.csv")
     symbol = infer_symbol(fname)
 
